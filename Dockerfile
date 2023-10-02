@@ -52,7 +52,7 @@ RUN pip install -r requirements.txt
 RUN python -m pip install --no-binary opencv-python opencv-python
 
 # Configure SSH
-RUN echo 'root:macbook1' | chpasswd
+RUN echo 'root:{}' | chpasswd
 RUN mkdir /var/run/sshd
 RUN sed -ri 's/^#?PermitRootLogin\s+.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 RUN sed -ri 's/UsePAM yes/#UsePAM yes/g' /etc/ssh/sshd_config  # I don't know the exact reason, but you need to make it for external access
