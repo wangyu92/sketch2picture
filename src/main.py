@@ -8,15 +8,25 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-import config
 from data_preparation import CycleDataset
 from discriminator import Discriminator
 from generator import Generator
+from transforms import transforms
 from utils import save_network, save_outputs
 
 
 def train_fn(
-    args, disc_X, disc_Y, gen_X, gen_Y, loader, opt_disc, opt_gen, l1, mse
+    args,
+    disc_X,
+    disc_Y,
+    gen_X,
+    gen_Y,
+    loader,
+    opt_disc,
+    opt_gen,
+    l1,
+    mse,
+    epoch,
 ):
     loop = tqdm(loader, leave=True)
 
@@ -125,16 +135,16 @@ def train_fn(
         gen_loss.backward()
         opt_gen.step()
 
-        if idx % 200 == 0:
+        if idx == len(loader) - 1:
             # The fake Digital Generated for a real Sketch
             sample_path = pathlib.Path(args.sample_dir)
             sample_path.mkdir(parents=True, exist_ok=True)
             save_outputs(
-                x, fake_y, sample_path / f"RealSketch-FakeDig-{idx}.png"
+                x, fake_y, sample_path / f"RealSketch-FakeDig-{epoch}.png"
             )
             # The fake Sketch Generated for a real Digital
             save_outputs(
-                y, fake_x, sample_path / f"RealDig-FakeSketch-{idx}.png"
+                y, fake_x, sample_path / f"RealDig-FakeSketch-{epoch}.png"
             )
 
         running_disc_loss += disc_loss.item()
@@ -146,15 +156,16 @@ def train_fn(
         loop.set_description(f"Step [{idx+1}/{len(loader)}]")
         loop.set_postfix(disc_loss=disc_loss.item(), gen_loss=gen_loss.item())
 
-        plot_path = pathlib.Path(args.plot_dir)
-        plot_path.mkdir(parents=True, exist_ok=True)
+    plot_path = pathlib.Path(args.plot_dir)
+    plot_path.mkdir(parents=True, exist_ok=True)
 
-        plt.plot(batch_disc_loss)
-        plt.plot(batch_gen_loss)
-        plt.title("Batch Wise Loss Plot")
-        plt.legend(["Discriminator Loss", "Generator Loss"])
-        plt.tight_layout()
-        plt.savefig(plot_path / f"batchwiseLoss-{idx}.png", dpi=600)
+    plt.plot(batch_disc_loss)
+    plt.plot(batch_gen_loss)
+    plt.title("Batch Wise Loss Plot")
+    plt.legend(["Discriminator Loss", "Generator Loss"])
+    plt.tight_layout()
+    plt.savefig(plot_path / f"batchwiseLoss-{epoch}.png", dpi=600)
+    plt.cla()
 
     return running_disc_loss / len(loader), running_gen_loss / len(loader)
 
@@ -169,13 +180,13 @@ def main():
     parser.add_argument("--save_dir", type=str, default="/root/save")
     parser.add_argument("--sample_dir", type=str, default="/root/samples")
     parser.add_argument("--plot_dir", type=str, default="/root/plots")
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--learning_rate", type=float, default=1e-5)
     parser.add_argument("--lambda_identity", type=float, default=0.25)
     parser.add_argument("--lambda_paired", type=float, default=5)
     parser.add_argument("--lambda_cycle", type=float, default=10)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument("--num_epochs", type=int, default=30)
     parser.add_argument("--save_model", type=bool, default=True)
     args: argparse.Namespace = parser.parse_args()
 
@@ -191,14 +202,16 @@ def main():
     gen_y.to(args.device)
     gen_x.to(args.device)
 
+    params = list(disc_x.parameters()) + list(disc_y.parameters())
     opt_disc = optim.Adam(
-        params=list(disc_x.parameters()) + list(disc_y.parameters()),
+        params=params,
         lr=args.learning_rate,
         betas=(0.5, 0.999),
     )
 
+    params = list(gen_y.parameters()) + list(gen_x.parameters())
     opt_gen = optim.Adam(
-        params=list(gen_y.parameters()) + list(gen_x.parameters()),
+        params=params,
         lr=args.learning_rate,
         betas=(0.5, 0.999),
     )
@@ -212,7 +225,7 @@ def main():
         # X-Images are sketches and Y-Images are Digitals
         root_x=root_x_dir,
         root_y=root_y_dir,
-        transform=config.transforms,
+        transform=transforms,
     )
     loader = DataLoader(
         dataset,
@@ -234,6 +247,7 @@ def main():
             opt_gen,
             L1,
             mse,
+            epoch,
         )
 
         disc_losses.append(disc_loss)
@@ -272,6 +286,7 @@ def main():
     plt.legend(["Discriminator Loss", "Generator Loss"])
     plt.tight_layout()
     plt.savefig(plot_path / "EpochLoss.png", dpi=600)
+    plt.cla()
 
 
 if __name__ == "__main__":

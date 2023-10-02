@@ -7,8 +7,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision.utils import make_grid, save_image
 
-import config
-
 
 def save_network(
     filename: str, network: nn.Module, optimizer: optim.Optimizer, **kwargs
@@ -28,9 +26,10 @@ def load_network(
     network: nn.Module,
     optimizer: optim.Optimizer,
     lr: float,
+    map_location: str = "cpu",
     **kwargs,
 ):
-    checkpoint = torch.load(filename, map_location=config.DEVICE)
+    checkpoint = torch.load(filename, map_location)
     network.load_state_dict(checkpoint["network"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     for param_group in optimizer.param_groups:
