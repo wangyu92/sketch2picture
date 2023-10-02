@@ -1,37 +1,56 @@
 import argparse
 import pathlib
+from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+from PIL import Image
+from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from data_preparation import CycleDataset
 from discriminator import Discriminator
 from generator import Generator
-from transforms import transforms
+from image_pool import ImagePool
+from transforms import get_transforms
 from utils import save_network, save_outputs
 
 
 def train_fn(
-    args,
-    disc_X,
-    disc_Y,
-    gen_X,
-    gen_Y,
-    loader,
-    opt_disc,
-    opt_gen,
-    l1,
-    mse,
-    epoch,
-):
+    disc_X: Discriminator,
+    disc_Y: Discriminator,
+    gen_X: Generator,
+    gen_Y: Generator,
+    fake_A_pool: ImagePool,
+    fake_B_pool: ImagePool,
+    loader: DataLoader,
+    opt_disc: optim.Adam,
+    opt_gen: optim.Adam,
+    lambda_cycle: float,
+    lambda_identity: float,
+    lambda_paired: float,
+    cur_epoch: int,
+    sample_dir: str,
+    plot_dir: str,
+    device: torch.device,
+) -> tuple[float | Any, float | Any]:
+    l1 = nn.L1Loss()
+    mse = nn.MSELoss()
+
+    disc_X.train()
+    disc_Y.train()
+    gen_X.train()
+    gen_Y.train()
+
     loop = tqdm(loader, leave=True)
 
-    running_disc_loss = 0.0
-    running_gen_loss = 0.0
+    running_disc_loss: float = 0.0
+    running_gen_loss: float = 0.0
 
     batch_disc_loss = []
     batch_gen_loss = []
@@ -41,45 +60,49 @@ def train_fn(
     # Generator-X takes in a Digital-Image(y) and cvts it to a Sketch-Image
     # Generator-Y takes in a Sketch-Image(y) and cvts it to a Digital-Image
     for idx, (x, y) in enumerate(iterable=loop):
-        x = x.to(args.device)
-        y = y.to(args.device)
+        x: Tensor = x.to(device)
+        y: Tensor = y.to(device)
 
         # Training the Discriminators (Adversarial training so we use MSE Loss)
 
         # Discriminator_X (works on the X-Samples)
-        fake_x = gen_X(y)  # Fake sample X generated from the Y->X Generator
-        disc_X_real = disc_X(x)  # Discriminator predictions on real X samples
-        disc_X_fake = disc_X(
-            fake_x.detach()
-        )  # Discriminator predictions on the fake X samples
+        # Fake sample X generated from the Y->X Generator
+        fake_x: Tensor = gen_X(y)
+        fake_x = fake_A_pool.query(fake_x)
+        # Discriminator predictions on real X samples
+        disc_X_real: Tensor = disc_X(x)
+        # Discriminator predictions on the fake X samples
+        disc_X_fake: Tensor = disc_X(fake_x.detach())
 
-        disc_X_real_loss = mse(
+        disc_X_real_loss: Tensor = mse(
             disc_X_real, torch.ones_like(disc_X_real)
         )  # The loss on the real samples by the disc
-        disc_X_fake_loss = mse(
+        disc_X_fake_loss: Tensor = mse(
             disc_X_fake, torch.zeros_like(disc_X_fake)
         )  # The loss on the fake samples by the disc
-        disc_X_loss = disc_X_real_loss + disc_X_fake_loss
+        disc_X_loss: Tensor = disc_X_real_loss + disc_X_fake_loss
 
         # Discriminator_Y (works on the Y-Samples)
-        fake_y = gen_Y(x)  # Fake sample Y generated from the X->Y Generator
-        disc_Y_real = disc_Y(
-            y
-        )  # Discriminator predictions on the real Y samples
-        disc_Y_fake = disc_Y(
-            fake_y.detach()
-        )  # Discriminator predictions on the fake Y samples
+        # Fake sample Y generated from the X->Y Generator
+        fake_y: Tensor = gen_Y(x)
+        fake_y = fake_B_pool.query(fake_y)
+        # Discriminator predictions on the real Y samples
+        disc_Y_real: Tensor = disc_Y(y)
+        # Discriminator predictions on the fake Y samples
+        disc_Y_fake: Tensor = disc_Y(fake_y.detach())
 
-        disc_Y_real_loss = mse(
+        # The loss on the real samples by the disc
+        disc_Y_real_loss: Tensor = mse(
             disc_Y_real, torch.ones_like(disc_Y_real)
-        )  # The loss on the real samples by the disc
-        disc_Y_fake_loss = mse(
+        )
+        # The loss on the fake samples by the disc
+        disc_Y_fake_loss: Tensor = mse(
             disc_Y_fake, torch.zeros_like(disc_Y_fake)
-        )  # The loss on the fake samples by the disc
-        disc_Y_loss = disc_Y_real_loss + disc_Y_fake_loss
+        )
+        disc_Y_loss: Tensor = disc_Y_real_loss + disc_Y_fake_loss
 
         # Putting it together
-        disc_loss = (disc_X_loss + disc_Y_loss) / 2
+        disc_loss: Tensor = (disc_X_loss + disc_Y_loss) / 2
 
         # Updating the parameters of the discriminators
         opt_disc.zero_grad()
@@ -120,14 +143,14 @@ def train_fn(
             gen_X_loss
             + gen_Y_loss
             # Complete Cycle loss
-            + cycle_x_loss * args.lambda_cycle
-            + cycle_y_loss * args.lambda_cycle
+            + cycle_x_loss * lambda_cycle
+            + cycle_y_loss * lambda_cycle
             # Complete Identity loss
-            + identity_x_loss * args.lambda_identity
-            + identity_y_loss * args.lambda_identity
+            + identity_x_loss * lambda_identity
+            + identity_y_loss * lambda_identity
             # Complete Paired loss
-            + paired_loss_x * args.lambda_paired
-            + paired_loss_y * args.lambda_paired
+            + paired_loss_x * lambda_paired
+            + paired_loss_y * lambda_paired
         )
 
         # Updating the parameters of the generators
@@ -137,14 +160,14 @@ def train_fn(
 
         if idx == len(loader) - 1:
             # The fake Digital Generated for a real Sketch
-            sample_path = pathlib.Path(args.sample_dir)
+            sample_path = pathlib.Path(sample_dir)
             sample_path.mkdir(parents=True, exist_ok=True)
             save_outputs(
-                x, fake_y, sample_path / f"RealSketch-FakeDig-{epoch}.png"
+                x, fake_y, sample_path / f"RealSketch-FakeDig-{cur_epoch}.png"
             )
             # The fake Sketch Generated for a real Digital
             save_outputs(
-                y, fake_x, sample_path / f"RealDig-FakeSketch-{epoch}.png"
+                y, fake_x, sample_path / f"RealDig-FakeSketch-{cur_epoch}.png"
             )
 
         running_disc_loss += disc_loss.item()
@@ -156,7 +179,7 @@ def train_fn(
         loop.set_description(f"Step [{idx+1}/{len(loader)}]")
         loop.set_postfix(disc_loss=disc_loss.item(), gen_loss=gen_loss.item())
 
-    plot_path = pathlib.Path(args.plot_dir)
+    plot_path = pathlib.Path(plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)
 
     plt.plot(batch_disc_loss)
@@ -164,10 +187,44 @@ def train_fn(
     plt.title("Batch Wise Loss Plot")
     plt.legend(["Discriminator Loss", "Generator Loss"])
     plt.tight_layout()
-    plt.savefig(plot_path / f"batchwiseLoss-{epoch}.png", dpi=600)
-    plt.cla()
+    plt.savefig(plot_path / f"batchwiseLoss-{cur_epoch}.png", dpi=600)
+    plt.clf()
 
     return running_disc_loss / len(loader), running_gen_loss / len(loader)
+
+
+def inference_fn(
+    dataset_dir: str,
+    g_s2p: Generator,
+    g_p2s: Generator,
+    crop_size: int,
+    save_dir: str,
+    epoch: int,
+    device: torch.device,
+):
+    test_ims_dir = pathlib.Path(dataset_dir) / "test"
+    image_paths = list(test_ims_dir.glob("*.jpg")) + list(
+        test_ims_dir.glob("*.png")
+    )
+    transforms = get_transforms(
+        load_size=crop_size, crop_size=crop_size, is_train=False
+    )
+
+    for image_path in image_paths:
+        is_schetched = image_path.stem.startswith("s")
+
+        image = np.array(Image.open(image_path).convert("RGB"))
+        image = transforms(image=image)["image"]
+        image = image.unsqueeze(0).to(device)
+        if is_schetched:
+            fake_image = g_s2p(image)
+        else:
+            fake_image = g_p2s(image)
+        save_outputs(
+            image,
+            fake_image,
+            pathlib.Path(save_dir) / f"{image_path.stem}_{epoch}.png",
+        )
 
 
 def main():
@@ -180,14 +237,21 @@ def main():
     parser.add_argument("--save_dir", type=str, default="/root/save")
     parser.add_argument("--sample_dir", type=str, default="/root/samples")
     parser.add_argument("--plot_dir", type=str, default="/root/plots")
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--load_size", type=int, default=286)
+    parser.add_argument("--crop_size", type=int, default=256)
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--lambda_identity", type=float, default=0.25)
     parser.add_argument("--lambda_paired", type=float, default=5)
     parser.add_argument("--lambda_cycle", type=float, default=10)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--num_epochs", type=int, default=30)
+    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs_decay", type=int, default=100)
+    parser.add_argument("--gan_mode", type=str, default="lsgan")
+    parser.add_argument("--pool_size", type=int, default=50)
     parser.add_argument("--save_model", type=bool, default=True)
+    parser.add_argument("--lr_policy", type=str, default="linear")
+    parser.add_argument("--lr_decay_iters", type=int, default=50)
     args: argparse.Namespace = parser.parse_args()
 
     disc_losses = []
@@ -216,39 +280,117 @@ def main():
         betas=(0.5, 0.999),
     )
 
-    L1 = nn.L1Loss()
-    mse = nn.MSELoss()
+    # Learning rate schedulers
+    if args.lr_policy == "linear":
+
+        def lin_fn(x: int) -> float:
+            return 1.0 - max(0, x - args.num_epochs_decay) / float(
+                args.num_epochs_decay + 1
+            )
+
+        scheduler_g = lr_scheduler.LambdaLR(
+            optimizer=opt_gen, lr_lambda=lin_fn
+        )
+        scheduler_d = lr_scheduler.LambdaLR(
+            optimizer=opt_disc, lr_lambda=lin_fn
+        )
+    elif args.lr_policy == "step":
+        scheduler_g = lr_scheduler.StepLR(
+            optimizer=opt_gen, step_size=args.lr_decay_iters, gamma=0.1
+        )
+        scheduler_d = lr_scheduler.StepLR(
+            optimizer=opt_disc, step_size=args.lr_decay_iters, gamma=0.1
+        )
+    elif args.lr_policy == "plateau":
+        scheduler_g = lr_scheduler.ReduceLROnPlateau(
+            optimizer=opt_gen,
+            mode="min",
+            factor=0.2,
+            threshold=0.01,
+            patience=5,
+        )
+        scheduler_d = lr_scheduler.ReduceLROnPlateau(
+            optimizer=opt_disc,
+            mode="min",
+            factor=0.2,
+            threshold=0.01,
+            patience=5,
+        )
+    elif args.lr_policy == "cosine":
+        scheduler_g = lr_scheduler.CosineAnnealingLR(
+            optimizer=opt_gen, T_max=args.num_epochs, eta_min=0
+        )
+        scheduler_d = lr_scheduler.CosineAnnealingLR(
+            optimizer=opt_disc, T_max=args.num_epochs, eta_min=0
+        )
+    else:
+        raise NotImplementedError(
+            f"Learning rate policy {args.lr_policy} is not implemented"
+        )
 
     root_x_dir = pathlib.Path(args.dataset_dir) / "Sketches"
     root_y_dir = pathlib.Path(args.dataset_dir) / "Digitals"
+    transforms_fn = get_transforms(
+        load_size=args.load_size, crop_size=args.crop_size
+    )
     dataset = CycleDataset(
         # X-Images are sketches and Y-Images are Digitals
         root_x=root_x_dir,
         root_y=root_y_dir,
-        transform=transforms,
+        transform=transforms_fn,
     )
     loader = DataLoader(
-        dataset,
+        dataset=dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
     )
 
-    for epoch in range(args.num_epochs):
+    fake_A_pool = ImagePool(args.pool_size)
+    fake_B_pool = ImagePool(args.pool_size)
+
+    lrs_g = []
+    lsr_d = []
+    for epoch in range(args.num_epochs + args.num_epochs_decay):
+        lr_g = opt_gen.param_groups[0]["lr"]
+        lr_d = opt_disc.param_groups[0]["lr"]
+        lrs_g.append(lr_g)
+        lsr_d.append(lr_d)
+
+        # Plot the learning rates
+        x_data = list(range(len(lrs_g)))
+        plot_path = pathlib.Path(args.plot_dir)
+        plot_path.mkdir(parents=True, exist_ok=True)
+        plt.plot(x_data, lrs_g)
+        plt.plot(x_data, lsr_d)
+        plt.title("Learning Rate Plot")
+        plt.legend(["Generator Learning Rate", "Discriminator Learning Rate"])
+        plt.tight_layout()
+        plt.savefig(plot_path / "LearningRate.png", dpi=600)
+        plt.clf()
+
         disc_loss, gen_loss = train_fn(
-            args,
-            disc_x,
-            disc_y,
-            gen_y,
-            gen_x,
-            loader,
-            opt_disc,
-            opt_gen,
-            L1,
-            mse,
-            epoch,
+            disc_X=disc_x,
+            disc_Y=disc_y,
+            gen_X=gen_y,
+            gen_Y=gen_x,
+            fake_A_pool=fake_A_pool,
+            fake_B_pool=fake_B_pool,
+            loader=loader,
+            opt_disc=opt_disc,
+            opt_gen=opt_gen,
+            lambda_cycle=args.lambda_cycle,
+            lambda_identity=args.lambda_identity,
+            lambda_paired=args.lambda_paired,
+            cur_epoch=epoch,
+            sample_dir=args.sample_dir,
+            plot_dir=args.plot_dir,
+            device=args.device,
         )
+
+        scheduler_g.step()
+        scheduler_d.step()
 
         disc_losses.append(disc_loss)
         gen_losses.append(gen_loss)
@@ -277,6 +419,16 @@ def main():
                 optimizer=opt_disc,
             )
 
+        inference_fn(
+            dataset_dir=args.dataset_dir,
+            g_s2p=gen_x,
+            g_p2s=gen_y,
+            crop_size=args.crop_size,
+            save_dir=args.sample_dir,
+            epoch=epoch,
+            device=args.device,
+        )
+
     plot_path = pathlib.Path(args.plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)
 
@@ -286,7 +438,7 @@ def main():
     plt.legend(["Discriminator Loss", "Generator Loss"])
     plt.tight_layout()
     plt.savefig(plot_path / "EpochLoss.png", dpi=600)
-    plt.cla()
+    plt.clf()
 
 
 if __name__ == "__main__":

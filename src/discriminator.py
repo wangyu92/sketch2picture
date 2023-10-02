@@ -23,14 +23,23 @@ class Block(nn.Module):
         return self.block(x)
 
 
-class Discriminator(
-    nn.Module
-):  # The discriminator that will be used in the CycleGAN
-    # Since the CycleGAN's discriminator is a patchGAN we will be outputting a patch of size (30, 30)
+class Discriminator(nn.Module):
+    """
+    The discriminator that will be used in the CycleGAN
+    Since the CycleGAN's discriminator is a patchGAN we will be outputting a patch of size (30, 30)
+    """
+
     def __init__(
-        self, in_channels: int = 3, features: list = [64, 128, 256, 512]
-    ):
+        self,
+        in_channels: int = 3,
+        features: list = [64, 128, 256, 512],
+        init_type: str = "normal",
+        init_gain: float = 0.02,
+    ) -> None:
         super().__init__()
+        self.init_type = init_type
+        self.init_gain = init_gain
+
         self.initial = nn.Sequential(
             nn.Conv2d(
                 in_channels,
@@ -71,6 +80,43 @@ class Discriminator(
             )
         )
         self.model = nn.Sequential(*layers)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m) -> None:
+        classname = m.__class__.__name__
+
+        init_type = self.init_type
+        init_gain = self.init_gain
+
+        if hasattr(m, "weight") and (
+            classname.find("Conv") != -1 or classname.find("Linear") != -1
+        ):
+            if init_type == "normal":
+                torch.nn.init.normal_(
+                    tensor=m.weight.data, mean=0.0, std=init_gain
+                )
+            elif init_type == "xavier":
+                torch.nn.init.xavier_normal_(
+                    tensor=m.weight.data, gain=init_gain
+                )
+            elif init_type == "kaiming":
+                torch.nn.init.kaiming_normal_(
+                    tensor=m.weight.data, a=0, mode="fan_in"
+                )
+            elif init_type == "orthogonal":
+                torch.nn.init.orthogonal_(tensor=m.weight.data, gain=init_gain)
+            else:
+                raise NotImplementedError(
+                    "initialization method [%s] is not implemented" % init_type
+                )
+            if hasattr(m, "bias") and m.bias is not None:
+                torch.nn.init.constant_(tensor=m.bias.data, val=0.0)
+        elif classname.find("BatchNorm2d") != -1:
+            torch.nn.init.normal_(
+                tensor=m.weight.data, mean=1.0, std=init_gain
+            )
+            torch.nn.init.constant_(tensor=m.bias.data, val=0.0)
 
     def forward(self, x):
         x = self.initial(x)
