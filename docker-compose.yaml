@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  s2p-trainer:
+    container_name: s2p-trainer
+    build: ./
+    command: /usr/sbin/sshd -D
+    volumes:
+      - ./src/:/root/src/
+      - ./data/:/root/data/
+      - /datasets/:/root/datasets/
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    ipc: host
+    ports:
+      - 8922:22
