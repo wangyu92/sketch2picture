@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torchinfo import summary
 
 
 class ConvBlock(nn.Module):
@@ -200,3 +201,5 @@ if __name__ == "__main__":
     image = generator(inputs)
     assert image.shape[1:] == torch.Size([3, 256, 256])
     print("Success")
+
+    summary(generator, input_size=(1, 3, 256, 256))

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torchinfo import summary
 
 
 class Block(nn.Module):
@@ -131,3 +132,5 @@ if __name__ == "__main__":
     preds = disc(inputs)
     assert preds.shape[1:] == torch.Size([1, 30, 30])
     print("Success")
+
+    summary(disc, input_size=(1, 3, 256, 256))
